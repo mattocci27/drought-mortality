@@ -1,4 +1,4 @@
-Aanalyses and figures as in the article "Hydraulic prediction of drought-induced plant dieback and top-kill depends on leaf habit and growth form" by YJ. Chen, B. Choat, F. Sterck, P. Maenpuen, M. Katabuchi, SB. Zhang, K. W. Tomlinson, R. S. Oliveira, YJ. Zhang, JX. Shen, KF. Cao, and S. Jansen to be publised in Ecology Letters.
+Aanalyses and figures to be published in Ecology Letters. "Hydraulic prediction of drought-induced plant dieback and top-kill depends on leaf habit and growth form" by YJ. Chen, B. Choat, F. Sterck, P. Maenpuen, M. Katabuchi, SB. Zhang, K. W. Tomlinson, R. S. Oliveira, YJ. Zhang, JX. Shen, KF. Cao, and S. Jansen .
 
 ## Data
 
