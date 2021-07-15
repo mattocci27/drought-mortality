@@ -1,0 +1,18 @@
+BootStrap: docker
+From: mattocci/myenv:4.0.5
+
+
+%apprun R
+  exec R "${@}"
+
+%apprun Rscript
+  exec Rscript "${@}"
+
+%runscript
+  exec R "${@}"
+
+%post
+    DEBIAN_FRONTEND=noninteractive
+
+    installGithub.r \
+      myaseen208/agricolae

@@ -1,0 +1,749 @@
+---
+title: Table
+author: Masatoshi Katabuchi
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+#rmdformats::material
+  html_document:
+    fig_caption: yes
+    theme: spacelab #readable #sandstone #spacelab #flatly
+    highlight: pygments #tango #kate
+    toc: TRUE
+    toc_depth: 2
+    number_sections: TRUE
+    toc_float:
+      collapsed: TRUE
+      smooth_scroll: TRUE
+      toc: true
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE)
+```
+
+This R markdown file contains the code to reproduce the Table 1 in "Hydraulic prediction of drought-induced plant dieback and top-kill depends on leaf habit and growth form" by Chen Ya-Jun et al. in Ecology Letters.
+
+# Packages
+
+```{r, cache=FALSE}
+#rm(list = ls())
+set.seed(123)
+library(tidyverse)
+library(rstanarm)
+library(tictoc)
+library(kableExtra)
+#rstan::rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores()) # Run on multiple cores
+
+theme_set(theme_bw())
+```
+
+# Data
+
+```{r}
+d <- read_csv("data/traits.csv") %>%
+  mutate(Leafhabit2 = ifelse(Leafhabit == "D", "D", "E_SD"))
+
+d <- d %>%
+  rename(log10KS = KS) %>%
+  rename(log10LMA =  LMA) %>%
+  rename(log10rleaf =  rleaf) %>%
+  rename(log10SWCleaf =  SWCleaf) %>%
+  rename(log10epsilon =  epsilon) %>%
+  rename(log10Cft =  Cft) %>%
+  rename(log10WOODSWC =  WOODSWC) %>%
+  mutate(log10KS =  log10(log10KS)) %>%
+  mutate(log10LMA =  log10(log10LMA)) %>%
+  mutate(log10rleaf =  log10(log10rleaf)) %>%
+  mutate(log10SWCleaf =  log10(log10SWCleaf)) %>%
+  mutate(log10epsilon =  log10(log10epsilon)) %>%
+  mutate(log10Cft =  log10(log10Cft)) %>%
+  mutate(log10WOODSWC =  log10(log10WOODSWC))
+
+tmp <- names(d)[5:23]
+
+dl <- d %>%
+  pivot_longer(tmp)
+dl
+```
+
+# Model for traits
+
+First, we model leaf and stem traits, hydraulic safety margins among three leaf habit types and three growth forms.
+
+```{r, eval=TRUE}
+n_iter <- 2000
+n_chain <- 4
+my_prior <- normal(location = 0, scale = 2.5, autoscale = TRUE)
+my_prior_aux <- cauchy(location = 0, scale = 2.5, autoscale = TRUE)
+
+tic()
+nd_anova <- dl %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(data2 = map(data, ~ filter(., !is.na(value)))) %>%
+#  head(3) %>%
+  mutate(trait_LH = map(data2, ~  stan_glmer(value ~ 0 +  (1|Leafhabit),
+                                    iter = n_iter,
+                                    chains = n_chain,
+                                    refresh = 0,
+                                    prior = my_prior,
+                                    prior_aux = my_prior_aux,
+                                    prior_intercept = my_prior,
+                                    adapt_delta = 0.99,
+                                    data = ., family = gaussian))) %>%
+  mutate(trait_LF = map(data2, ~  stan_glmer(value ~ 0 +  (1|Lifeform),
+                                    iter = n_iter,
+                                    chains = n_chain,
+                                    refresh = 0,
+                                    prior = my_prior,
+                                    prior_aux = my_prior_aux,
+                                    prior_intercept = my_prior,
+                                    adapt_delta = 0.99,
+                                    data = ., family = gaussian)))
+toc()
+
+```
+
+
+Here are utility functions to get posterior distributions.
+
+```{r}
+sig_fun <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            D = `b[(Intercept) Leafhabit:D]`,
+            E = `b[(Intercept) Leafhabit:E]`,
+            S = `b[(Intercept) Leafhabit:SD]`) %>%
+      mutate(E_S = E -  S) %>%
+      mutate(S_D = S -  D) %>%
+      mutate(E_D = E -  D)
+  lwr <- 1 - 0.05/6
+  upr <- 0 + 0.05/6
+  lwr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, lwr))
+  upr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, upr))
+  # +1 indicautes signficance
+   sign(lwr2 * upr2)
+}
+
+sig_fun2 <- function(fit) {
+fit <- nd_anova$trait_LF[[1]]
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            L = `b[(Intercept) Lifeform:L]`,
+            S = `b[(Intercept) Lifeform:S]`,
+            T = `b[(Intercept) Lifeform:T]`) %>%
+      mutate(L_S = L -  S) %>%
+      mutate(S_T = S -  T) %>%
+      mutate(L_T = L -  T)
+  lwr <- 1 - 0.05/6
+  upr <- 0 + 0.05/6
+  lwr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, lwr))
+  upr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, upr))
+  # +1 indicautes signficance
+   sign(lwr2 * upr2)
+}
+
+mean_fun <- function(fit) {
+#  fit <- nd_anova$trait_LH[[3]]
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            D = `b[(Intercept) Leafhabit:D]`,
+            E = `b[(Intercept) Leafhabit:E]`,
+            SD = `b[(Intercept) Leafhabit:SD]`)  %>%
+  dplyr::select(E, SD, D)
+  means <- p_mat %>%
+    apply(., 2, mean)
+  means %>% round(2)
+}
+
+mean_fun2 <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            L = `b[(Intercept) Lifeform:L]`,
+            S = `b[(Intercept) Lifeform:S]`,
+            T = `b[(Intercept) Lifeform:T]`) %>%
+  dplyr::select(L, S, T)
+  means <- p_mat %>%
+    apply(., 2, mean)
+
+  means %>% round(2)
+}
+
+letter_fun <- function(fit) {
+#  fit <- nd_anova$trait_LH[[3]]
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            D = `b[(Intercept) Leafhabit:D]`,
+            E = `b[(Intercept) Leafhabit:E]`,
+            S = `b[(Intercept) Leafhabit:SD]`) %>%
+      mutate(E_S = E -  S) %>%
+      mutate(S_D = S -  D) %>%
+      mutate(E_D = E -  D)
+  lwr <- 1 - 0.05/6
+  upr <- 0 + 0.05/6
+
+  lwr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, lwr))
+  upr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, upr))
+  # +1 indicautes signficance
+   signs <- sign(lwr2 * upr2)
+   signs[signs == 1] <- 0.01
+   signs[signs == -1] <- 0.8
+
+  means <- p_mat %>%
+    rename(SD = S) %>%
+    dplyr::select(E, SD, D) %>%
+    apply(., 2, mean) %>% as.numeric
+
+  alpha <- 0.05
+
+  pvalue<-matrix(1,nrow=3,ncol=3)
+  pvalue[1,2]<-pvalue[2,1]<-signs[1]
+  pvalue[2,3]<-pvalue[3,2]<-signs[2]
+  pvalue[1,3]<-pvalue[3,1]<-signs[3]
+
+  treatments <- c("E", "SD", "D")
+
+  out <- agricolae::orderPvalue(treatments, means, alpha, pvalue, console=TRUE)
+  out$LH <- rownames(out) %>% factor(., levels = treatments)
+  out2 <- out[order(out$LH), 2]
+  c("E_letter" = out2[1], "SD_letter" = out2[2], "D_letter" = out2[3])
+}
+
+letter_fun2 <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            L = `b[(Intercept) Lifeform:L]`,
+            S = `b[(Intercept) Lifeform:S]`,
+            T = `b[(Intercept) Lifeform:T]`) %>%
+      mutate(T_S = T -  S) %>%
+      mutate(S_L = S -  L) %>%
+      mutate(T_L = T -  L)
+  lwr <- 1 - 0.05/6
+  upr <- 0 + 0.05/6
+
+  lwr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, lwr))
+  upr2 <- p_mat %>%
+    dplyr::select(6:8) %>%
+    apply(., 2, function(x)quantile(x, upr))
+  # +1 indicautes signficance
+   signs <- sign(lwr2 * upr2)
+   signs[signs == 1] <- 0.01
+   signs[signs == -1] <- 0.8
+
+  means <- p_mat %>%
+    dplyr::select(L, S, T) %>%
+    apply(., 2, mean) %>% as.numeric %>%
+    round(2)
+
+  alpha <- 0.05
+
+  pvalue<-matrix(1,nrow=3,ncol=3)
+  pvalue[1,2]<-pvalue[2,1]<-signs[1]
+  pvalue[2,3]<-pvalue[3,2]<-signs[2]
+  pvalue[1,3]<-pvalue[3,1]<-signs[3]
+#  colnames(pvalue) <- rownames(pvalue) <- names(signs)
+
+  treatments <- c("T", "S", "L")
+
+  out <- agricolae::orderPvalue(treatments, means, alpha, pvalue, console=TRUE)
+  out$LH <- rownames(out) %>% factor(., levels = treatments)
+  out2 <- out[order(out$LH), 2]
+  c("T_letter" = out2[1], "S_letter" = out2[2], "L_letter" = out2[3])
+}
+
+upr_fun <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            D_upr = `b[(Intercept) Leafhabit:D]`,
+            E_upr = `b[(Intercept) Leafhabit:E]`,
+            SD_upr = `b[(Intercept) Leafhabit:SD]`)  %>%
+  dplyr::select(E_upr, SD_upr, D_upr)
+  means <- p_mat %>%
+    apply(., 2, function(x)quantile(x, 0.975))
+  means %>% round(2)
+}
+
+
+lwr_fun <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            D_lwr = `b[(Intercept) Leafhabit:D]`,
+            E_lwr = `b[(Intercept) Leafhabit:E]`,
+            SD_lwr = `b[(Intercept) Leafhabit:SD]`)  %>%
+  dplyr::select(E_lwr, SD_lwr, D_lwr)
+  means <- p_mat %>%
+    apply(., 2, function(x)quantile(x, 0.025))
+  means %>% round(2)
+}
+
+
+upr_fun2 <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            L_upr = `b[(Intercept) Lifeform:L]`,
+            S_upr = `b[(Intercept) Lifeform:S]`,
+            T_upr = `b[(Intercept) Lifeform:T]`)  %>%
+  dplyr::select(L_upr, S_upr, T_upr)
+  means <- p_mat %>%
+    apply(., 2, function(x)quantile(x, 0.975))
+  means %>% round(2)
+}
+
+lwr_fun2 <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            L_lwr = `b[(Intercept) Lifeform:L]`,
+            S_lwr = `b[(Intercept) Lifeform:S]`,
+            T_lwr = `b[(Intercept) Lifeform:T]`)  %>%
+  dplyr::select(L_lwr, S_lwr, T_lwr)
+  means <- p_mat %>%
+    apply(., 2, function(x)quantile(x, 0.025))
+  means %>% round(2)
+}
+
+```
+
+
+We applied the above functions and get the results.
+
+```{r}
+tmp <- nd_anova %>%
+  mutate(map_dfr(trait_LH, mean_fun)) %>%
+  mutate(map_dfr(trait_LH, upr_fun)) %>%
+  mutate(map_dfr(trait_LH, lwr_fun)) %>%
+  mutate(map_dfr(trait_LH, sig_fun)) %>%
+  mutate(orderP = map(trait_LH, letter_fun)) %>%
+  mutate(E_letter = map_chr(orderP,  ~ .[1])) %>%
+  mutate(SD_letter = map_chr(orderP,  ~ .[2])) %>%
+  mutate(D_letter = map_chr(orderP,  ~ .[3])) %>%
+  mutate(map_dfr(trait_LF, mean_fun2)) %>%
+  mutate(map_dfr(trait_LF, upr_fun2)) %>%
+  mutate(map_dfr(trait_LF, lwr_fun2)) %>%
+  mutate(map_dfr(trait_LF, sig_fun2)) %>%
+  mutate(orderP2 = map(trait_LF, letter_fun2)) %>%
+  mutate(T_letter = map_chr(orderP2,  ~ .[1])) %>%
+  mutate(S_letter = map_chr(orderP2,  ~ .[2])) %>%
+  mutate(L_letter = map_chr(orderP2,  ~ .[3])) %>%
+  dplyr::select(-2:-5) %>%
+  dplyr::select(-orderP, -orderP2) %>%
+  ungroup
+
+tmp[str_detect(tmp$name, "log10"), 2:10] <- round(10^tmp[str_detect(tmp$name, "log10"), 2:10], 2)
+tmp[str_detect(tmp$name, "log10"), 17:25] <- round(10^tmp[str_detect(tmp$name, "log10"), 17:25], 2)
+
+letter_dat <- tmp %>%
+  mutate(name2 = factor(name,
+                       levels = c(
+                                  "log10KS",
+                                  "P50",
+                                  "P88",
+                                  "MVL",
+                                  "HV",
+                                  "Fmin",
+                                  "rxyl",
+                                  "log10WOODSWC",
+                                  "po",
+                                  "ptlp",
+                                  "log10SWCleaf",
+                                  "log10Cft",
+                                  "log10epsilon",
+                                  "RWCtlp",
+                                  "log10LMA",
+                                  "log10rleaf",
+                                  "HSM50",
+                                  "HSM88",
+                                  "HSMTLP"
+                       ))) %>%
+  mutate(name3 = case_when(
+  name == "log10KS" ~ "$\\mathrm{K_s}$",
+  name == "log10Cft" ~ "$\\mathrm{C_{leaf}}$",
+  name == "P50" ~ "$\\mathrm{P_{50}}$",
+  name == "P88" ~ "$\\mathrm{P_{88}}$",
+  name == "HSM50" ~ "$\\mathrm{HSM_{50}}$",
+  name == "HSM88" ~ "$\\mathrm{HSM_{88}}$",
+  name == "HSMTLP" ~ "$\\mathrm{HSM_{tlp}}$",
+  name == "po" ~ "$\\mathrm{\\pi_o}$",
+  name == "ptlp" ~ "$\\mathrm{\\pi_{tlp}}$",
+  name == "HV" ~ "$\\mathrm{H_V}$",
+  name == "Fmin" ~ "$\\mathrm{\\Psi_{min}}$",
+  name == "log10epsilon" ~ "$\\mathrm{\\epsilon}$",
+  name == "log10LMA" ~ "LMA",
+  name == "MVL" ~ "MVL",
+  name == "log10SWCleaf" ~ "$\\mathrm{SWC_{leaf}}$",
+  name == "log10WOODSWC" ~ "$\\mathrm{SWC_{wood}}$",
+  name == "RWCtlp" ~ "$\\mathrm{RWC_{tlp}}$",
+  name == "log10rleaf" ~ "$\\mathrm{\\rho_{leaf}}$",
+  name == "rxyl" ~ "$\\mathrm{\\rho_{wood}}$",
+  name == "diback" ~ "Branch die-back (%)",
+  name == "mort" ~ "Whole-plant mortality (%)",
+  TRUE ~ name,)) %>%
+  mutate(tmp1 = paste(E_letter, SD_letter, D_letter, sep ="_")) %>%
+  mutate(tmp2 = paste(T_letter, S_letter, L_letter, sep ="_")) %>%
+  mutate(letter_LH =
+  case_when(
+            tmp1 == "b_ab_a" ~ "a_ab_b",
+            tmp1 == "b_b_a" ~ "a_a_b",
+            tmp1 == "c_b_a" ~ "a_b_c",
+  TRUE ~ tmp1)) %>%
+  mutate(letter_LF =
+  case_when(
+            tmp2 == "b_a_b" ~ "a_b_c",
+            tmp2 == "b_ab_a" ~ "a_ab_b",
+            tmp2 == "b_b_a" ~ "a_a_b",
+            tmp2 == "c_b_a" ~ "a_b_c",
+  TRUE ~ tmp2))  %>%
+  mutate(S_letter2 = str_split_fixed(letter_LF, "_", 3)[,1]) %>%
+  mutate(T_letter2 = str_split_fixed(letter_LF, "_", 3)[,2]) %>%
+  mutate(L_letter2 = str_split_fixed(letter_LF, "_", 3)[,3]) %>%
+  mutate(E_letter2 = str_split_fixed(letter_LH, "_", 3)[,1]) %>%
+  mutate(SD_letter2 = str_split_fixed(letter_LH, "_", 3)[,2]) %>%
+  mutate(D_letter2 = str_split_fixed(letter_LH, "_", 3)[,3]) %>%
+  mutate(S = paste0(S, " [", S_lwr, ", ", S_upr, "]^", S_letter2, "^")) %>%
+  mutate(T = paste0(T, " [", T_lwr, ", ", T_upr, "]^", T_letter2, "^")) %>%
+  mutate(L = paste0(L, " [", L_lwr, ", ", L_upr, "]^", L_letter2, "^")) %>%
+  mutate(E = paste0(E, " [", E_lwr, ", ", E_upr, "]^", E_letter2, "^")) %>%
+  mutate(SD = paste0(SD, " [", SD_lwr, ", ", SD_upr, "]^", SD_letter2, "^")) %>%
+  mutate(D = paste0(D, " [", D_lwr, ", ", D_upr, "]^", D_letter2, "^")) %>%
+  dplyr::select(name2,name3,
+                E, SD, D, E_letter, SD_letter, D_letter, tmp1, letter_LH,
+      S, T, L, T_letter, S_letter, L_letter, tmp2, letter_LF
+  )
+
+letter_dat %>%
+  arrange(name2) %>%
+  kable()  %>%
+  kable_styling()
+
+```
+
+# Model for branch die-back and top-kill ratios
+
+Next, we model branch die-back and top-kill ratio using logistic functions.
+
+```{r,eval=TRUE}
+
+model_B_LH <- stan_glmer(cbind(DeadBranch, AllBranch - DeadBranch) ~ 0 +  (1|Leafhabit),
+                                    iter = n_iter,
+                                    chains = n_chain,
+                                    refresh = 0,
+                                    prior = my_prior,
+                                    prior_aux = my_prior_aux,
+                                    prior_intercept = my_prior,
+                                    adapt_delta = 0.99,
+                                    data = d, family = binomial)
+
+model_B_LF <- stan_glmer(cbind(DeadBranch, AllBranch - DeadBranch) ~ 0 +
+                         (1|Lifeform),
+                                    iter = n_iter,
+                                    chains = n_chain,
+                                    refresh = 0,
+                                    prior = my_prior,
+                                    prior_aux = my_prior_aux,
+                                    prior_intercept = my_prior,
+                                    adapt_delta = 0.99,
+                                    data = d, family = binomial)
+
+model_T_LH <- stan_glmer(cbind(DeadTree, AllTree - DeadTree) ~ 0 +  (1|Leafhabit),
+                                    iter = n_iter,
+                                    chains = n_chain,
+                                    refresh = 0,
+                                    prior = my_prior,
+                                    prior_aux = my_prior_aux,
+                                    prior_intercept = my_prior,
+                                    adapt_delta = 0.99,
+                                    data = d, family = binomial)
+model_T_LF <- stan_glmer(cbind(DeadTree, AllTree - DeadTree) ~ 0 +
+                         (1|Lifeform),
+                                    iter = n_iter,
+                                    chains = n_chain,
+                                    refresh = 0,
+                                    prior = my_prior,
+                                    prior_aux = my_prior_aux,
+                                    prior_intercept = my_prior,
+                                    adapt_delta = 0.99,
+                                    data = d, family = binomial)
+```
+
+
+Here are utility functions to extract the results.
+
+```{r}
+letter_fun3 <- function(fit) {
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            D = `b[(Intercept) Leafhabit:D]`,
+            E = `b[(Intercept) Leafhabit:E]`,
+            S = `b[(Intercept) Leafhabit:SD]`) %>%
+      mutate(E_S = E -  S) %>%
+      mutate(S_D = S -  D) %>%
+      mutate(E_D = E -  D)
+  lwr <- 0 + 0.05/6
+  upr <- 1 - 0.05/6
+#  lwr <- 0.025
+#  upr <- 0.975
+  lwr2 <- p_mat %>%
+    dplyr::select(5:7) %>%
+    apply(., 2, function(x)quantile(x, lwr))
+  upr2 <- p_mat %>%
+    dplyr::select(5:7) %>%
+    apply(., 2, function(x)quantile(x, upr))
+  # +1 indicautes signficance
+   signs <- sign(lwr2 * upr2)
+   signs[signs == 1] <- 0.01
+   signs[signs == -1] <- 0.8
+
+  means <- p_mat %>%
+    rename(SD = S) %>%
+    dplyr::select(E, SD, D) %>%
+    apply(., 2, mean) %>% as.numeric
+
+  alpha <- 0.05
+
+  pvalue<-matrix(1,nrow=3,ncol=3)
+  pvalue[1,2]<-pvalue[2,1]<-signs[1]
+  pvalue[2,3]<-pvalue[3,2]<-signs[2]
+  pvalue[1,3]<-pvalue[3,1]<-signs[3]
+#  colnames(pvalue) <- rownames(pvalue) <- names(signs)
+
+  treatments <- c("E", "SD", "D")
+
+  out <- agricolae::orderPvalue(treatments, means, alpha, pvalue, console=TRUE)
+  out$LH <- rownames(out) %>% factor(., levels = treatments)
+  out2 <- out[order(out$LH), 2]
+  c("E_letter" = out2[1], "SD_letter" = out2[2], "D_letter" = out2[3])
+}
+
+letter_fun4 <- function(fit) {
+  fit <- model_T_LF
+  p_mat <- as_tibble(fit) %>%
+      rename(
+            L = `b[(Intercept) Lifeform:L]`,
+            S = `b[(Intercept) Lifeform:S]`,
+            T = `b[(Intercept) Lifeform:T]`) %>%
+      mutate(T_S = T -  S) %>%
+      mutate(S_L = S -  L) %>%
+      mutate(T_L = T -  L)
+  lwr <- 0 + 0.05/6
+  upr <- 1 - 0.05/6
+  lwr2 <- p_mat %>%
+    dplyr::select(5:7) %>%
+    apply(., 2, function(x)quantile(x, lwr))
+  upr2 <- p_mat %>%
+    dplyr::select(5:7) %>%
+    apply(., 2, function(x)quantile(x, upr))
+  # +1 indicautes signficance
+   signs <- sign(lwr2 * upr2)
+   signs[signs == 1] <- 0.01
+   signs[signs == -1] <- 0.8
+
+  means <- p_mat %>%
+    dplyr::select(L, S, T) %>%
+    apply(., 2, mean) %>% as.numeric %>%
+    round(2)
+
+  alpha <- 0.05
+
+  pvalue<-matrix(1,nrow=3,ncol=3)
+  pvalue[1,2]<-pvalue[2,1]<-signs[1]
+  pvalue[2,3]<-pvalue[3,2]<-signs[2]
+  pvalue[1,3]<-pvalue[3,1]<-signs[3]
+
+  treatments <- c("T", "S", "L")
+
+  out <- agricolae::orderPvalue(treatments, means, alpha, pvalue, console=TRUE)
+  out$LH <- rownames(out) %>% factor(., levels = treatments)
+  out2 <- out[order(out$LH), 2]
+  c("T_letter" = out2[1], "S_letter" = out2[2], "L_letter" = out2[3])
+}
+
+```
+
+We get letters that describe significance.
+
+```{r}
+tmp1 <- letter_fun3(model_B_LH) %>%
+  paste(collapse = "_")
+tmp2 <- letter_fun3(model_T_LH) %>%
+  paste(collapse = "_")
+tmp1
+tmp2
+letter_LH <- c(tmp1, tmp2)
+
+tmp3 <- letter_fun4(model_B_LF) %>%
+  paste(collapse = "_")
+tmp4 <- letter_fun4(model_T_LF) %>%
+  paste(collapse = "_")
+tmp3
+tmp4
+letter_LF <- c(tmp3, tmp4)
+
+```
+
+We get the posterior distributions of branch dieback and top-kill ratios for
+the each leaf habit and growth form.
+
+```{r}
+my_logistic <- function(x)
+  {
+     (1 / (1 + exp(-x)) * 100) %>% round(2)
+  }
+
+binom_fun <- function(fit, LH = TRUE) {
+  if (LH) {
+    p_mat <- as_tibble(fit) %>%
+        rename(
+              D_upr = `b[(Intercept) Leafhabit:D]`,
+              E_upr = `b[(Intercept) Leafhabit:E]`,
+              SD_upr = `b[(Intercept) Leafhabit:SD]`)  %>%
+    dplyr::select(E_upr, SD_upr, D_upr)
+  } else {
+    p_mat <- as_tibble(fit) %>%
+        rename(
+              L_lwr = `b[(Intercept) Lifeform:L]`,
+              S_lwr = `b[(Intercept) Lifeform:S]`,
+              T_lwr = `b[(Intercept) Lifeform:T]`)  %>%
+    dplyr::select(T_lwr, S_lwr, L_lwr)
+  }
+
+  means <- p_mat %>%
+    apply(., 2, mean) %>%
+    my_logistic
+  lwr <- p_mat %>%
+    apply(., 2, function(x)quantile(x, 0.025)) %>%
+    my_logistic
+  upr <- p_mat %>%
+    apply(., 2, function(x)quantile(x, 0.975)) %>%
+    my_logistic
+  paste0(means, " [", lwr, ", ", upr, "]")
+}
+
+
+lh1 <- rbind(
+          binom_fun(model_B_LH, LH = TRUE),
+          binom_fun(model_T_LH, LH = TRUE))
+colnames(lh1) <- c("E", "SD", "D")
+lh2 <- lh1 %>%
+  as_tibble %>%
+  mutate(name2 = c("Branch dieback ratio (%)", "Top-kill ratio (%)"))
+lf1 <- rbind(binom_fun(model_B_LF, LH = FALSE),
+        binom_fun(model_T_LF, LH = FALSE))
+colnames(lf1) <- c("S", "T", "L")
+lf2 <- lf1 %>%
+  as_tibble
+
+letter_dat2 <- bind_cols(lh2, lf2) %>%
+  mutate(letter_LF, letter_LH) %>%
+  mutate(letter_LH2 =
+  case_when(
+            letter_LH == "b_a_b" ~ "a_b_a",
+            TRUE ~ "hoge")) %>%
+  mutate(letter_LF2 =
+  case_when(
+            letter_LF == "b_a_b" ~ "a_b_a",
+            letter_LF == "b_a_ab" ~ "a_b_ab",
+            TRUE ~ "hoge"))
+letter_dat2 %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+# Table
+
+```{r}
+tb_dat <- letter_dat %>%
+  dplyr::select(name2, E, SD, D, S, T, L) %>%
+  bind_rows(
+   letter_dat2 %>%
+   dplyr::select(name2, E, SD, D, S, T, L)) %>%
+  mutate(name_fct = factor(name2,
+                       levels = c(
+                                  "log10KS",
+                                  "P50",
+                                  "P88",
+                                  "MVL",
+                                  "HV",
+                                  "Fmin",
+                                  "rxyl",
+                                  "log10WOODSWC",
+                                  "po",
+                                  "ptlp",
+                                  "log10SWCleaf",
+                                  "log10Cft",
+                                  "log10epsilon",
+                                  "RWCtlp",
+                                  "log10LMA",
+                                  "log10rleaf",
+                                  "HSM50",
+                                  "HSM88",
+                                  "HSMTLP",
+        "Branch dieback ratio (%)", "Top-kill ratio (%)"
+                       ))) %>%
+  mutate(name_greek = case_when(
+  name2 == "log10KS" ~ "$\\mathrm{K_s\\;(kg\\; m^{-1} \\; s^{-1}\\; MPa^{-1})}$",
+  name2 == "log10Cft" ~ "$\\mathrm{C_{leaf}}$ (mol m^-2^ MPa^-1^)",
+  name2 == "P50" ~ "$\\mathrm{P_{50}}$ (MPa)",
+  name2 == "P88" ~ "$\\mathrm{P_{88}}$ (MPa)",
+  name2 == "HSM50" ~ "$\\mathrm{HSM_{50}}$ (MPa)",
+  name2 == "HSM88" ~ "$\\mathrm{HSM_{88}}$ (MPa)",
+  name2 == "HSMTLP" ~ "$\\mathrm{HSM_{tlp}}$ (MPa)",
+  name2 == "po" ~ "$\\mathrm{\\pi_o}$ (MPa)",
+  name2 == "ptlp" ~ "$\\mathrm{\\pi_{tlp}}$ (MPa)",
+  name2 == "HV" ~ "$\\mathrm{H_V}$ (mm^2^ cm^-2^)",
+  name2 == "Fmin" ~ "$\\mathrm{\\Psi_{min}}$ (MPa)",
+  name2 == "log10epsilon" ~ "$\\mathrm{\\epsilon}$ (MPa)",
+  name2 == "log10LMA" ~ "LMA (g cm^-2^)",
+  name2 == "MVL" ~ "MVL (cm)",
+  name2 == "log10SWCleaf" ~ "$\\mathrm{SWC_{leaf}}$ (g g^-1^)",
+  name2 == "log10WOODSWC" ~ "$\\mathrm{SWC_{wood}}$ (g g^-1^)",
+  name2 == "RWCtlp" ~ "$\\mathrm{RWC_{tlp}}$ (MPa)",
+  name2 == "log10rleaf" ~ "$\\mathrm{\\rho_{leaf}}$ (g cm^-3^)",
+  name2 == "rxyl" ~ "$\\mathrm{\\rho_{wood}}$ (g cm^-3^)",
+  name2 == "diback" ~ "Branch die-back (%)",
+  name2 == "mort" ~ "Whole-plant mortality (%)",
+  TRUE ~ name2,)) %>%
+  arrange(name_fct)
+
+tb_dat %>%
+  dplyr::select(Traits = name_greek,
+                `Evergreen n = 9` = E,
+                `Semi-deciduous n = 16` = SD,
+                `Deciduous n = 15` = D,
+                `Tree n = 17` = T,
+                `Shrub n = 16` = S,
+                `Liana n = 7` = L
+  ) %>%
+  kable()  %>%
+  pack_rows("Stem traits", 1, 8) %>%
+  pack_rows("Leaf traits", 9, 16) %>%
+  pack_rows("Safety margins", 17, 19) %>%
+  pack_rows("Whole-plant performance", 20, 21) %>%
+  kable_styling() %>%
+  add_header_above(c(" " = 1, "Leaf habit" = 3, "Growth form" = 3))
+```
+
+**Table 1.** Comparison on leaf and stem traits, hydraulic safety margins, branch dieback and top-kill ratios among three leaf habit types and three growth forms for 40 species from a hot-dry savanna of southwest China.
+Values and values in brackets are the posterior mean and the 95% credible interval, respectively.
+Effects sharing the same letters are not significantly different at the $\alpha$ = 0.05 level (98.3% CI).
+
+# Computing Environment
+
+```{r}
+devtools::session_info()
+```
+
